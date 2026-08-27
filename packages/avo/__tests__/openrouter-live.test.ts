@@ -143,7 +143,16 @@ class OpenRouterVariationAgent {
   }
 }
 
-describe.skipIf(!apiKey)('OpenRouter live governed variation (auditable receipts)', () => {
+// OBS-2272: gate on an EXPLICIT opt-in, not merely on the presence of a key.
+// `!apiKey` is falsy for any non-empty string, so a stale or revoked key in the
+// environment un-gated this suite, made a real (billable) API call, and failed
+// the whole run with an opaque `OpenRouter HTTP 401` — misattributing a dead
+// credential to a broken test. Live, credential-consuming tests must be asked
+// for. Set AVO_LIVE=1 (with a working key) to run them.
+const liveOptIn = process.env.AVO_LIVE === '1' || process.env.AVO_LIVE === 'true';
+const runLive = liveOptIn && Boolean(apiKey);
+
+describe.skipIf(!runLive)('OpenRouter live governed variation (auditable receipts)', () => {
   it(
     'drives the operator with a real model, signs every receipt, and persists usage evidence',
     { timeout: 300_000 },
