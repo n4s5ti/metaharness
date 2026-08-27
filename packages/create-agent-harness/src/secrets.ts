@@ -20,6 +20,18 @@ import { execFile as execFileCb } from 'node:child_process';
 
 const execFile = promisify(execFileCb);
 
+/**
+ * Wall-clock ceiling for any single `gcloud` invocation.
+ *
+ * Why: `gcloud` blocks for ~14s per call when the CLI is installed but
+ * Application Default Credentials are absent (the common state on a fresh
+ * developer machine). `harness validate` runs the secrets gate by default,
+ * so an unbounded call makes the primary release gate look hung. PATH
+ * discovery below is already bounded for the same reason; the calls that
+ * actually reach the network were not. See OBS-2269.
+ */
+export const GCLOUD_TIMEOUT_MS = 8_000;
+
 export type SubcommandResult = { code: number; lines: string[] };
 
 export interface GcloudRunner {
@@ -33,10 +45,29 @@ export const defaultRunner: GcloudRunner = {
       const { stdout, stderr } = await execFile('gcloud', args, {
         maxBuffer: 1024 * 1024,
         windowsHide: true,
+        timeout: GCLOUD_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
       });
       return { code: 0, stdout, stderr };
     } catch (err) {
-      const e = err as { code?: number; stdout?: string; stderr?: string; message?: string };
+      const e = err as {
+        code?: number;
+        stdout?: string;
+        stderr?: string;
+        message?: string;
+        killed?: boolean;
+        signal?: string;
+      };
+      // A timeout kill surfaces as killed/SIGKILL rather than a gcloud exit
+      // code. Report it as a distinguishable failure so callers can degrade
+      // to a WARN instead of presenting it as a real credential error.
+      if (e.killed || e.signal === 'SIGKILL') {
+        return {
+          code: 124,
+          stdout: e.stdout ?? '',
+          stderr: `gcloud timed out after ${GCLOUD_TIMEOUT_MS}ms`,
+        };
+      }
       return {
         code: typeof e.code === 'number' ? e.code : 1,
         stdout: e.stdout ?? '',

@@ -197,20 +197,54 @@ export async function validate(args: string[]): Promise<SubcommandResult> {
   const secret = args.find(a => a.startsWith('--secret='))?.slice('--secret='.length);
   const lines: string[] = [`harness validate — ${dir}`];
 
+  // OBS-2269: the umbrella buffers every check and prints only at the end,
+  // so a slow gate renders as a blank terminal with nothing to attribute the
+  // stall to. Emit a progress breadcrumb to stderr (stdout stays the clean,
+  // parseable report) before each gate runs.
+  const progress = (name: string) => {
+    // Quiet under test runners and when explicitly silenced — the breadcrumb
+    // is a human affordance for a slow interactive run, not test output.
+    if (!process.env.HARNESS_VALIDATE_QUIET && !process.env.VITEST) {
+      process.stderr.write(`  … ${name}\n`);
+    }
+  };
+
   const results: CheckResult[] = [];
 
+  progress('doctor');
   results.push(await runDoctor(dir));
+  progress('verify');
   results.push(await runVerify(dir));
+  progress('path-guard');
   results.push(await runPathGuard(dir));
+  progress('mcp');
   results.push(await runMcpCheck(dir));
 
   if (!skipGcp) {
+    progress('secrets (gcloud — use --skip-gcp to skip)');
     const sc = await secretsCheck(secret ? [`--secret=${secret}`] : []);
-    results.push({
-      name: 'secrets',
-      code: sc.code,
-      detail: sc.lines.slice(-2).join(' | ').replace(/\s+/g, ' '),
-    });
+    const detail = sc.lines.slice(-2).join(' | ').replace(/\s+/g, ' ');
+    // OBS-2269: a gcloud timeout (code 124 from the bounded runner) means the
+    // credential provider is unreachable, not that the harness is unfit to
+    // release. Degrade to WARN so an offline/ADC-less machine cannot fail the
+    // umbrella on an environmental condition.
+    if (sc.code === 124 || /timed out after \d+ms/.test(detail)) {
+      results.push({
+        name: 'secrets',
+        code: 0,
+        tag: 'WARN',
+        detail: `gcloud unreachable or unauthenticated — skipped (re-run with --skip-gcp to silence): ${detail}`,
+      });
+    } else {
+      // OBS-2269: a genuine secrets finding (e.g. NPM_TOKEN absent) is a real
+      // publish blocker and must keep failing. Keep the hint attached so the
+      // user can tell "publish credentials missing" from "harness is broken".
+      results.push({
+        name: 'secrets',
+        code: sc.code,
+        detail: sc.code === 0 ? detail : `${detail} — publish-time GCP check; use --skip-gcp for a local-only run`,
+      });
+    }
   } else {
     results.push({ name: 'secrets', code: 0, detail: 'skipped (--skip-gcp)' });
   }

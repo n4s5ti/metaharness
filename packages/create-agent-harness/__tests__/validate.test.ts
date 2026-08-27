@@ -170,4 +170,22 @@ describe('harness validate', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  // OBS-2269: `harness validate` used to hang with zero output when gcloud
+  // was installed but Application Default Credentials were absent — each
+  // unbounded gcloud call blocked ~14s and the umbrella buffered everything.
+  it('completes --skip-gcp promptly and does not hang (OBS-2269)', async () => {
+    const dir = await makeHarnessDir();
+    try {
+      const started = Date.now();
+      const { code } = await validate([dir, '--skip-gcp']);
+      const elapsed = Date.now() - started;
+      expect(code).toBe(0);
+      // Generous ceiling: the real regression blocked for 14s+ per gcloud
+      // call and the umbrella never returned inside a 300s timeout.
+      expect(elapsed).toBeLessThan(10_000);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

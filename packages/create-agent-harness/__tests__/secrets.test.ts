@@ -102,3 +102,26 @@ describe('harness secrets dispatch', () => {
     expect(code).toBe(0);
   });
 });
+
+// OBS-2269: gcloud calls were unbounded. With the CLI installed but no
+// Application Default Credentials, each call blocked ~14s, so the default
+// `harness validate` umbrella (which runs the secrets gate) appeared hung.
+describe('gcloud timeout handling (OBS-2269)', () => {
+  it('exports a bounded timeout for gcloud invocations', async () => {
+    const { GCLOUD_TIMEOUT_MS } = await import('../src/secrets.js');
+    expect(typeof GCLOUD_TIMEOUT_MS).toBe('number');
+    expect(GCLOUD_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(GCLOUD_TIMEOUT_MS).toBeLessThanOrEqual(15_000);
+  });
+
+  it('surfaces a timed-out gcloud call as code 124 rather than blocking', async () => {
+    const timingOutRunner: GcloudRunner = {
+      async run() {
+        return { code: 124, stdout: '', stderr: 'gcloud timed out after 8000ms' };
+      },
+    };
+    const { code, lines } = await check([], timingOutRunner, async () => true);
+    expect(code).toBe(1);
+    expect(lines.join('\n')).toMatch(/gcloud is on PATH/);
+  });
+});
